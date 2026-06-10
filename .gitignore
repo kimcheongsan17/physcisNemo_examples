@@ -1,0 +1,10 @@
+__pycache__/
+.ipynb_checkpoints/
+checkpoints/
+outputs/
+wandb/
+mlruns/
+*.pt
+*.pth
+*.ckpt
+*.log

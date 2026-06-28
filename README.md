@@ -1,46 +1,25 @@
-# physcisNemo_examples
+# PhysicsNeMo Darcy PINO
 
-Colab-first study repo for NVIDIA PhysicsNeMo examples and custom research experiments.
+Korean, cell-by-cell study materials for NVIDIA PhysicsNeMo's official-resolution Darcy Physics-Informed Neural Operator (PINO) workflow.
 
-The first target is the official Darcy FNO example:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/darcy_pino_physicsnemo_colab.ipynb)
 
-- NVIDIA PhysicsNeMo: https://github.com/NVIDIA/physicsnemo
-- Darcy FNO example: https://github.com/NVIDIA/physicsnemo/tree/main/examples/cfd/darcy_fno
+## Main files
 
-## Open In Colab
+- `notebooks/darcy_pino_physicsnemo_colab.ipynb` — the recommended Colab/Jupyter notebook.
+- `scripts/darcy_pino_physicsnemo.py` — the same 26 cells in `# %%` percent format for VS Code, Jupyter-aware editors, or sequential Python execution.
 
-Open the starter notebook with:
+Both versions contain the same:
 
-```text
-https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/darcy_fno_colab_starter.ipynb
-```
+- PhysicsNeMo 2.1.1 `FNO` and `PhysicsInformer` workflow
+- NVIDIA Darcy dataset download and official 241-to-240 boundary crop
+- 240 x 240 permeability-to-pressure operator learning
+- data MSE plus Darcy PDE residual loss
+- API-origin, tensor-shape, finite-value, and device diagnostics
+- 50-epoch T4 training, live visualization, validation, and checkpoint export
 
-## Repo Layout
+## Recommended usage
 
-```text
-notebooks/
-  darcy_fno_colab_starter.ipynb
+Open the notebook with the Colab badge and run from top to bottom on a T4 GPU runtime. The Python companion uses Colab-style `/content` paths and is primarily intended for cell-by-cell execution through its `# %%` markers.
 
-configs/
-  darcy_fno_colab_smoke.yaml
-  darcy_fno_colab_medium.yaml
-
-experiments/
-  darcy_custom/
-```
-
-## Study Flow
-
-1. Run the official Darcy FNO baseline in Colab.
-2. Save checkpoints and logs to Google Drive.
-3. Change only config values first: resolution, batch size, FNO modes, latent channels.
-4. Add one custom idea at a time: custom loss, extra input features, validation metrics, or model block changes.
-5. Keep each experiment small enough to smoke test before running a longer training job.
-
-## Recommended First Experiments
-
-- Compare `fno_modes`: 8, 12, 16.
-- Compare `latent_channels`: 16, 32, 64.
-- Add `MSE + gradient_penalty` loss.
-- Add relative L2 validation metric.
-- Try train-low-resolution and infer-higher-resolution behavior.
+Generated datasets and the approximately 27 MB model checkpoint are intentionally not committed. The notebook downloads/regenerates them and can save checkpoints to Google Drive when needed.

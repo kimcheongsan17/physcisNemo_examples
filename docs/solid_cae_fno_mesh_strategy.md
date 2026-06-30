@@ -1,0 +1,450 @@
+# Solid CAE 적용을 위한 FNO·가변 메쉬 처리 전략
+
+> 작성 범위: PhysicsNeMo Darcy FNO/PINO 예제의 고정 입력 차원에 대한 질문부터, 고체 CAE의 메쉬 차이·SDF·저주파 FNO·응력 집중 후보 선별에 관해 논의한 내용까지 정리한다.  
+> 목적: 이후 실제 데이터와 실험 결과가 생길 때 계속 갱신할 수 있는 설계 메모로 사용한다.
+
+## 1. 출발점: Darcy 예제와 실제 CAE의 차이
+
+PhysicsNeMo Darcy 예제의 FNO 입력은 일반적으로 다음과 같은 정규 격자 텐서다.
+
+\[
+[B,C,H,W]
+\]
+
+3차원 문제라면 다음 형태가 된다.
+
+\[
+[B,C,D,H,W]
+\]
+
+여기서 모든 샘플은 한 배치 안에서 같은 \(H,W\), 또는 같은 \(D,H,W\)를 사용한다.
+
+반면 실제 고체 CAE에서는 같은 CAD 형상이라도 다음 이유로 메쉬가 서로 달라진다.
+
+- 메쉬 생성 프로그램이 다름
+- 메쉬 알고리즘과 품질 조건이 다름
+- 곡률 근사 방식이 다름
+- 노드 개수와 요소 개수가 다름
+- 노드 위치와 요소 크기가 미세하게 다름
+- 노드 및 요소 번호 순서가 다름
+
+따라서 CAE 메쉬의 노드 배열을 그대로 FNO 입력으로 사용하면 샘플마다 입력 길이가 달라진다.
+
+## 2. 먼저 구분해야 하는 세 가지 차원
+
+가변 메쉬 문제에서 서로 다른 개념을 구분해야 한다.
+
+1. 물리 공간 차원  
+   2D 또는 3D를 의미한다. 같은 고체 문제라면 보통 변하지 않는다.
+
+2. 노드 특성 차원  
+   좌표, 재료, 경계조건, 변위 등 노드 하나가 가지는 feature 개수다. 이 차원은 고정할 수 있다.
+
+3. 노드 또는 요소 개수  
+   메쉬마다 달라지는 \(N_{\text{node}}\), \(N_{\text{element}}\)다.
+
+실제로 문제가 되는 것은 물리 차원이 아니라 세 번째 항목인 이산화 해상도와 표본 위치의 차이다.
+
+핵심 관점은 다음과 같다.
+
+> 물리적 해 \(u(\mathbf{x})\)가 먼저 존재하고, 각각의 메쉬는 그 연속장을 서로 다른 위치에서 표본화한 것이다.
+
+따라서 서로 다른 메쉬의 node ID를 직접 대응시키기보다, 모든 메쉬를 동일한 물리 좌표계와 공통 표현으로 사상해야 한다.
+
+## 3. 동일 형상 판단의 기준은 메쉬가 아니라 CAD
+
+같은 형상을 서로 다른 mesher로 생성한다면 기준 형상은 어느 한쪽 메쉬가 아니라 원본 CAD여야 한다.
+
+    Reference CAD
+       ├── Mesher A → Mesh A
+       └── Mesher B → Mesh B
+
+전처리 단계에서 다음 항목을 통일한다.
+
+- 길이 단위
+- 원점
+- 좌표축 방향
+- 회전과 반사 여부
+- 파트 ID
+- 재료 영역 ID
+- 하중 및 경계조건 surface ID
+- 접촉면 또는 인터페이스 ID
+
+곡면을 서로 다른 mesher가 약간 다르게 근사한다면, 가능할 경우 경계 노드를 원본 CAD surface에 다시 projection한다.
+
+원본 CAD 없이 메쉬만 존재한다면 landmark 정렬이나 surface registration을 사용할 수 있다. 다만 이 경우에도 다음 지표를 통해 두 형상이 실제로 동일한지 검사해야 한다.
+
+- surface Hausdorff distance
+- 체적 상대 오차
+- 표면적 상대 오차
+- 법선 방향 차이
+- 경계 및 파트 태그 일치 여부
+
+허용 오차보다 차이가 작으면 meshing variation으로 처리한다. 구멍 위치, 두께, 곡률 반경 등이 실제로 다르면 geometry variation으로 취급하고 모델 입력에 반영한다.
+
+## 4. FNO를 위한 공통 표현
+
+FNO는 규칙적인 격자에서 FFT를 수행하므로 비정렬 CAE 노드 배열을 그대로 입력하는 모델이 아니다. FNO를 유지하려면 고정된 canonical grid 또는 공통 query point 집합이 필요하다.
+
+예를 들어 모든 해석에 대해 다음 좌표를 고정한다.
+
+\[
+Q=\{\mathbf{q}_1,\mathbf{q}_2,\ldots,\mathbf{q}_{N_Q}\}
+\]
+
+2D에서는 \(H\times W\), 3D에서는 \(D\times H\times W\) Cartesian grid로 구성할 수 있다.
+
+### 4.1 형상 입력: SDF와 mask
+
+공통 grid에서 Signed Distance Field를 계산한다.
+
+\[
+\phi(\mathbf{x})=
+\begin{cases}
+-\operatorname{dist}(\mathbf{x},\partial\Omega), & \mathbf{x}\in\Omega \\
++\operatorname{dist}(\mathbf{x},\partial\Omega), & \mathbf{x}\notin\Omega
+\end{cases}
+\]
+
+FNO 입력 채널의 예시는 다음과 같다.
+
+    [SDF, solid_mask, material, BC_mask, load_x, load_y, load_z]
+
+중요한 점은 node 좌표 \(X\) 또는 현재 좌표 \(x_t\)를 FNO에 넣는다고 자동으로 SDF가 생성되는 것은 아니라는 것이다. 별도의 geometry preprocessing이 필요하다.
+
+    노드 좌표 + 요소 연결
+              ↓
+       외곽 surface 추출
+              ↓
+       canonical grid 생성
+              ↓
+    grid point별 signed distance 계산
+              ↓
+          SDF tensor
+
+초기 형상만 필요하면 기준 좌표 \(X_0\)에서 SDF를 한 번 계산한다. 변형 형상 자체를 입력으로 사용한다면 \(x_t=X_0+u_t\)의 외곽 surface에서 매 시점 SDF를 갱신해야 한다.
+
+여러 물체가 있는 경우에는 각 파트의 SDF를 별도 채널로 유지하는 것이 좋다.
+
+    [SDF_part_A, SDF_part_B, material, BC, load]
+
+두 물체를 하나의 union SDF로 합치면 내부 인터페이스나 접촉면 구분이 사라질 수 있다.
+
+열린 shell처럼 내부와 외부 부호가 모호한 형상은 unsigned distance와 별도의 occupancy 또는 side mask를 사용하는 것이 안전하다.
+
+### 4.2 CAE field를 공통 좌표로 사상
+
+메쉬 \(m\)의 노드 또는 요소 field를 공통 query point에서 평가하는 interpolation operator \(P_m\)을 만든다.
+
+\[
+u_Q^{(m)}=P_m u_m
+\]
+
+예를 들면 다음과 같다.
+
+\[
+u_Q^{A}=P_Au_A,\qquad
+u_Q^{B}=P_Bu_B
+\]
+
+Mesh A와 Mesh B의 노드 수가 달라도 \(u_Q^A\)와 \(u_Q^B\)는 동일한 크기를 가진다.
+
+nearest-node 복사보다는 다음 방법을 사용해야 한다.
+
+- 요소 내부 탐색
+- FEM shape function
+- triangle 또는 tetrahedron의 barycentric interpolation
+- integration-point field의 element-wise projection
+- 필요 시 \(L^2\) 또는 보존형 projection
+
+예측 후에는 반대 방향의 사상을 사용해 FNO의 공통 grid 출력을 원하는 CAE 메쉬의 노드 또는 요소 위치에서 평가한다.
+
+## 5. 보간에서 주의할 부분
+
+곡률, 접촉, 재료 경계, 균열, 하중 입력부에서는 field가 매끄럽지 않을 수 있다. 단순한 interpolation은 다음 문제를 만들 수 있다.
+
+- 최대 응력 감소
+- 접촉압력 경계의 평활화
+- 서로 다른 파트 사이의 값 혼합
+- 얇은 구조의 소실
+- 경계조건 mask의 번짐
+
+따라서 다음 원칙을 적용한다.
+
+- 서로 다른 파트와 재료 영역을 가로질러 보간하지 않는다.
+- 접촉면과 내부 인터페이스 태그를 유지한다.
+- 응력은 가능하면 integration point 또는 element field의 의미를 보존한다.
+- 전역 field loss에는 면적 또는 체적 가중치를 사용한다.
+- 작은 접촉 영역에는 별도로 정규화한 local loss를 둔다.
+- canonical grid 해상도에 따른 결과 수렴성을 검사한다.
+
+특히 날카로운 모서리의 최대 응력은 메쉬 세분화에 따라 계속 증가할 수 있다. 이런 경우 raw maximum stress 자체가 mesh-objective한 학습 목표가 아닐 수 있다. 총 접촉력, 변형 에너지, 일정 물리 영역 평균, percentile stress와 같은 지표도 함께 검토해야 한다.
+
+## 6. 저주파 FNO에 대한 가설
+
+고체의 한쪽 변형과 하중이 구조 전체로 전달되는 현상은 전역적이다. 변위 field는 응력 field보다 비교적 매끄럽기 때문에 저주파 Fourier mode를 사용하는 FNO가 다음 항목을 빠르게 근사할 가능성이 있다.
+
+- 전체 변형 형상
+- 하중 전달 경로
+- 저주파 변위 field
+- 넓은 영역의 변형 에너지 분포
+- 응력 집중이 발생할 가능성이 있는 대략적인 후보 영역
+
+이 가설은 전역 저비용 surrogate로서 타당하다. 다만 Fourier mode 수를 줄이는 것의 직접적인 효과는 다음과 같다.
+
+- 공간 표현 복잡도 감소
+- 모델 계산량과 메모리 감소
+- 고주파 noise에 대한 민감도 감소
+- 전역적인 smooth field에 대한 inductive bias
+
+Fourier mode 수를 줄인다고 CAE 학습 case 개수가 자동으로 감소하는 것은 아니다. 학습 case 수를 줄이려면 uncertainty-based sampling 또는 active learning이 별도로 필요하다.
+
+## 7. 저주파 FNO만으로 응력 집중을 확정할 수 없는 이유
+
+고체에서 변형률과 응력은 변위의 미분으로 계산된다.
+
+\[
+\hat{\varepsilon}(k)\sim ik\hat{u}(k),\qquad
+\hat{\sigma}(k)=C:\hat{\varepsilon}(k)
+\]
+
+변위에서 작은 고주파 성분이라도 미분 후 응력에서는 크게 작용할 수 있다. 따라서 저주파 mode만 남기면 전체 변형은 잘 맞더라도 다음 항목을 놓칠 수 있다.
+
+- fillet의 국부 응력
+- 구멍 가장자리
+- 하중 및 구속 입력부
+- 접촉 시작 및 종료 경계
+- 날카로운 형상의 stress singularity
+
+따라서 저주파 FNO의 출력을 최종 최대응력으로 사용하기보다, 전역 변형 예측과 refinement candidate 생성에 사용하는 것이 적절하다.
+
+## 8. 제안하는 계층형 구조
+
+현재 논의에서 가장 자연스러운 구조는 다음과 같다.
+
+    CAD/SDF + 재료 + 하중 + 경계조건
+                       ↓
+              저해상도·저모드 FNO
+                       ↓
+            전역 변위 u_coarse 예측
+                       ↓
+       residual·gradient·uncertainty 평가
+                       ↓
+             refinement candidate map
+                       ↓
+     local fine mesh / MeshGraphNet / 정밀 CAE
+                       ↓
+              국부 응력과 접촉 결과
+
+FNO가 넓은 영역의 변형 전달을 계산하고, 국부 모델 또는 기존 CAE가 선택된 영역을 정밀하게 계산한다.
+
+### 8.1 후보 점수
+
+후보 점수의 예시는 다음과 같다.
+
+\[
+s(\mathbf{x})=
+\alpha\|\nabla\varepsilon(u)\|
++\beta\|\nabla\cdot\sigma+b\|
++\gamma U(\mathbf{x})
++\delta G(\mathbf{x})
+\]
+
+각 항은 다음 의미를 가진다.
+
+- \(\|\nabla\varepsilon\|\): 변형률이 빠르게 변하는 영역
+- \(\|\nabla\cdot\sigma+b\|\): 평형방정식 residual
+- \(U\): ensemble 또는 stochastic inference에서 얻은 불확실성
+- \(G\): 곡률, 구멍, 경계조건, 하중 입력부, 접촉 가능면 등의 geometry prior
+
+### 8.2 refinement head
+
+FNO가 후보를 자동으로 선택하게 하려면 별도의 출력 head를 학습하는 것이 좋다.
+
+    u_coarse, refinement_score = model(inputs)
+
+fine CAE와 coarse prediction의 차이를 이용해 라벨을 만들 수 있다.
+
+\[
+y_{\mathrm{refine}}(\mathbf{x})=
+\begin{cases}
+1, & |\sigma_{\mathrm{fine}}-\sigma_{\mathrm{coarse}}|>\tau \\
+0, & \text{otherwise}
+\end{cases}
+\]
+
+candidate detector는 precision보다 recall을 우선해야 한다. 후보 영역이 조금 넓게 검출되는 것은 허용할 수 있지만 실제 위험 영역을 누락하는 false negative는 위험하다.
+
+## 9. 메쉬 불변성 학습
+
+동일한 CAD와 물리조건을 서로 다른 mesher로 생성했다면 공통 좌표에서 결과가 일치하도록 consistency loss를 추가할 수 있다.
+
+\[
+L_{\mathrm{mesh}}
+=
+\left\|
+\hat{u}_Q^{A}-\hat{u}_Q^{B}
+\right\|^2
+\]
+
+전체 loss의 예시는 다음과 같다.
+
+\[
+L=
+\lambda_uL_{\mathrm{field}}
++\lambda_{\mathrm{eq}}L_{\mathrm{equilibrium}}
++\lambda_{\mathrm{mesh}}L_{\mathrm{mesh}}
++\lambda_{\mathrm{ref}}L_{\mathrm{refinement}}
+\]
+
+접촉 문제까지 확장하면 non-penetration, contact pressure, complementarity, friction loss를 별도로 추가한다.
+
+노드 수가 많은 메쉬가 loss를 자동으로 지배하지 않도록 각 샘플을 먼저 면적 또는 체적으로 정규화한 후 batch 평균을 계산한다.
+
+## 10. 원래 CAE 메쉬를 유지해야 하는 경우
+
+최종 출력이 반드시 원래 비정렬 메쉬의 노드 또는 요소에 존재해야 하고, 국부 연결성과 접촉 topology가 중요하다면 MeshGraphNet 계열이 더 자연스럽다.
+
+- MeshGraphNet: 원래 요소 연결을 graph edge로 사용
+- HybridMeshGraphNet: mesh edge와 현재 공간의 world/contact edge를 함께 사용
+- BiStrideMeshGraphNet: graph pyramid를 통한 다중 스케일 처리
+
+이 경우 노드 feature 차원은 고정하되 노드 개수는 샘플마다 달라도 된다. 가변 graph는 padding, bucket batching 또는 서로 연결되지 않은 graph concatenation으로 처리할 수 있다.
+
+따라서 두 접근은 경쟁 관계라기보다 역할 분담 관계로 볼 수 있다.
+
+- FNO: 공통 grid에서 전역 저주파 변형과 후보 영역 계산
+- MeshGraphNet 또는 CAE: 원래 fine mesh에서 국부 고주파 응력과 접촉 계산
+
+## 11. 학습 데이터 절감을 위한 Active Learning
+
+저모드 FNO는 한 case의 공간 계산량을 줄일 수 있지만, 필요한 CAE case 수를 직접 줄이지는 않는다. case 수를 줄이려면 다음 반복 구조를 사용한다.
+
+    초기 소량 CAE 데이터
+              ↓
+         FNO 초기 학습
+              ↓
+      미해석 설계점의 불확실성 평가
+              ↓
+    불확실성·residual이 큰 case 선택
+              ↓
+         해당 CAE만 추가 실행
+              ↓
+            재학습
+
+후보 선정 기준에는 다음 항목을 조합할 수 있다.
+
+- ensemble disagreement
+- PDE residual
+- refinement candidate 면적
+- geometry 및 load parameter diversity
+- 기존 데이터와의 거리
+
+## 12. 단계별 구현 계획
+
+### Phase 1: Mesh invariance benchmark
+
+동일한 단순 CAD와 동일한 하중조건을 두 개 이상의 mesher로 생성한다.
+
+- 각 메쉬의 좌표계와 태그 정렬
+- CAD 기반 SDF 생성
+- CAE field를 공통 query grid로 사상
+- mesher 간 field 차이와 interpolation 오차 측정
+
+목표는 FNO 학습 전에 데이터 전처리만으로 동일 형상이 얼마나 일관된 표현으로 변환되는지 확인하는 것이다.
+
+### Phase 2: Low-mode solid FNO baseline
+
+- 입력: SDF, 재료, BC, load
+- 출력: 전역 displacement
+- 비교: Fourier mode 수에 따른 변위 오차, 평형 residual, 계산량
+- 응력은 최종값이 아니라 후보 indicator 평가용으로 사용
+
+### Phase 3: Refinement detector
+
+- fine CAE와 coarse FNO 차이로 candidate label 생성
+- refinement head 또는 별도 segmentation model 학습
+- 위험 영역 recall과 top-k coverage 측정
+
+### Phase 4: Local high-resolution model
+
+선택된 영역에 다음 중 하나를 적용한다.
+
+- local fine CAE
+- local MeshGraphNet
+- local PINO patch
+- global FNO + local graph correction
+
+### Phase 5: Contact와 비선형 문제
+
+- 파트별 SDF와 contact surface tag
+- 현재 좌표 기반 contact/world edge
+- non-penetration 및 contact equilibrium loss
+- 시점 또는 load increment별 graph 갱신
+
+## 13. 검증 지표
+
+### 공통 표현과 메쉬 불변성
+
+- SDF 차이
+- mapped field relative \(L_2\)
+- 서로 다른 mesher 간 prediction consistency
+- query point가 요소 밖으로 빠지는 비율
+- 면적, 체적, 법선 및 경계 태그 오차
+
+### 전역 FNO
+
+- displacement relative \(L_2\)
+- strain energy error
+- equilibrium residual
+- Fourier mode 수 대비 정확도와 계산량
+
+### refinement candidate
+
+- high-error region recall
+- false-negative rate
+- top-k area coverage
+- 후보 영역 크기 대비 포착된 strain energy 비율
+
+### 국부 해석
+
+- local stress distribution
+- 접촉력과 force-displacement curve
+- penetration
+- mesh refinement에 따른 결과 수렴성
+
+## 14. 현재 결론
+
+1. 서로 다른 메쉬의 node ID를 직접 맞추지 않는다.
+2. 원본 CAD와 공통 물리 좌표계를 기준으로 모든 샘플을 정렬한다.
+3. FNO 입력에는 canonical grid의 SDF, 재료, 하중, 경계조건을 사용한다.
+4. CAE field는 FEM shape function 또는 보존형 projection을 통해 공통 query point로 사상한다.
+5. 저모드 FNO는 전역 변위와 하중 전달을 담당한다.
+6. 저모드 FNO가 국부 응력을 정확히 복원한다고 가정하지 않는다.
+7. residual, uncertainty, geometry prior, refinement head를 이용해 정밀해석 후보를 선택한다.
+8. 선택 영역은 원래 fine mesh의 MeshGraphNet 또는 기존 CAE로 정밀 계산한다.
+9. 학습 case 수를 줄이려면 Active Learning을 결합한다.
+10. 첫 실험은 접촉보다 단순 고체 형상에서 서로 다른 mesher 간 mesh invariance를 검증하는 것부터 시작한다.
+
+## 15. 계속 갱신할 항목
+
+- [ ] 첫 benchmark CAD 형상 선정
+- [ ] 사용할 두 mesher 선정
+- [ ] CAD surface tag 표준 정의
+- [ ] canonical grid 해상도 결정
+- [ ] SDF 생성 도구 결정
+- [ ] CAE 결과 파일 형식 결정
+- [ ] integration point field의 projection 방식 결정
+- [ ] 저모드 FNO baseline 작성
+- [ ] refinement label 정의
+- [ ] 후보 영역 평가 지표 결정
+- [ ] local MeshGraphNet 또는 CAE 연동 방식 결정
+- [ ] contact 확장 시 파트별 SDF와 contact edge 정의
+
+## 참고 자료
+
+- [PhysicsNeMo FNO API](https://docs.nvidia.com/physicsnemo/26.05/physicsnemo/api/models/fnos.html)
+- [PhysicsNeMo Mesh: Sampling and Interpolation](https://docs.nvidia.com/physicsnemo/latest/physicsnemo/api/mesh/sampling.html)
+- [PhysicsNeMo MeshGraphNet Tutorial](https://docs.nvidia.com/physicsnemo/26.05/user-guide/model_architecture/meshgraphnet.html)
+- [PhysicsNeMo Active Learning](https://docs.nvidia.com/physicsnemo/26.05/user-guide/active_learning.html)
+- [Nested FNO Example](https://docs.nvidia.com/deeplearning/physicsnemo/physicsnemo-core/examples/cfd/darcy_nested_fnos/README.html)

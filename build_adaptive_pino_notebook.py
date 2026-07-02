@@ -70,7 +70,8 @@ cells[0] = markdown(
 
     > 전체 physics-loss 양을 늘리지 않고, 어려운 공간에 loss를 재배치하면 validation residual이 개선되는가?
 
-    `QUICK_MODE=True`는 Colab 실행 경로를 검증하는 smoke test입니다. 성능 결론에는 충분하지 않습니다.
+    `FULL_BASELINE_COMPARISON=True`는 기존 PINO와 같은 batch size 1, 50 epochs를 두 모델에 적용합니다.
+    빠른 코드 경로 확인만 필요할 때만 이를 `False`로 바꾸어 1 epoch smoke test를 실행합니다.
     """
 )
 
@@ -108,15 +109,18 @@ cells.extend(
             import copy
             import time
 
-            QUICK_MODE = True  # @param {type:"boolean"}
+            FULL_BASELINE_COMPARISON = True  # @param {type:"boolean"}
             ADAPTIVE_ALPHA = 4.0  # @param {type:"number"}
             ADAPTIVE_TEMPERATURE = 0.7  # @param {type:"number"}
             MATERIAL_PRIOR_WEIGHT = 0.0  # @param {type:"number"}
 
-            # QUICK_MODE는 두 모델 각각 12 update만 실행하는 Colab smoke test입니다.
-            # False이면 두 모델 각각 공식 train split을 10 epoch 학습합니다.
-            STEPS_PER_VARIANT = 12 if QUICK_MODE else len(official_train_dataset) * 10
-            VALIDATION_LIMIT = 8 if QUICK_MODE else len(official_valid_dataset)
+            # 기본값은 기존 GitHub PINO와 정확히 같은 batch/epoch 조건입니다.
+            # False는 코드 경로만 빠르게 확인하는 1-epoch smoke test입니다.
+            TRAIN_BATCH_SIZE = 1
+            COMPARISON_EPOCHS = 50 if FULL_BASELINE_COMPARISON else 1
+            VALIDATION_LIMIT = (
+                len(official_valid_dataset) if FULL_BASELINE_COMPARISON else 8
+            )
 
             PDE_INTERIOR_MASK = torch.zeros(
                 1, 1, 240, 240, device=DEVICE, dtype=official_invar.dtype
@@ -208,7 +212,10 @@ cells.extend(
                 }
 
 
-            print("mode / steps / validation:", QUICK_MODE, STEPS_PER_VARIANT, VALIDATION_LIMIT)
+            print("full baseline comparison:", FULL_BASELINE_COMPARISON)
+            print("batch size / epochs:", TRAIN_BATCH_SIZE, COMPARISON_EPOCHS)
+            print("train / validation samples:",
+                  len(official_train_dataset), VALIDATION_LIMIT)
             """
         ),
         markdown(
@@ -282,8 +289,17 @@ cells.extend(
             r"""
             ## 5. 같은 초기값·같은 순서로 fixed와 adaptive 학습
 
-            QUICK mode의 목적은 실행 검증입니다. 12 step 결과로 우열을 주장하지 않습니다.
-            실제 비교 시 `QUICK_MODE=False`로 바꾸고 여러 seed를 반복해야 합니다.
+            기본 설정은 기존 GitHub PINO와 동일합니다.
+
+            - train batch size: 1
+            - train split: 102 samples
+            - epochs: 50
+            - optimizer updates: $102\times50=5{,}100$ / model
+            - validation: 매 epoch 전체 102 samples
+            - Adam, learning rate, scheduler: 기존 PINO와 동일
+
+            fixed/adaptive는 같은 초기 state와 같은 epoch별 sample 순서를 사용합니다.
+            이제 그래프의 한 점은 서로 다른 단일 batch가 아니라 **한 epoch의 102 batch 평균**입니다.
             """
         ),
         code(
@@ -312,11 +328,33 @@ cells.extend(
             def make_train_loader():
                 return DataLoader(
                     official_train_dataset,
-                    batch_size=1,
+                    batch_size=TRAIN_BATCH_SIZE,
                     shuffle=True,
                     num_workers=0,
                     generator=torch.Generator().manual_seed(SEED),
                 )
+
+
+            @torch.no_grad()
+            def validation_epoch_means(model, mode):
+                model.eval()
+                keys = [
+                    "data",
+                    "pde_uniform",
+                    "pde_objective",
+                    "physics_contribution",
+                    "total",
+                ]
+                sums = {key: 0.0 for key in keys}
+                batches = 0
+                for index, (invar, outvar, _, _) in enumerate(official_valid_loader):
+                    if index >= VALIDATION_LIMIT:
+                        break
+                    losses = comparison_losses(model, invar, outvar, mode)
+                    for key in keys:
+                        sums[key] += float(losses[key])
+                    batches += 1
+                return {key: value / batches for key, value in sums.items()}
 
 
             def train_variant(mode):
@@ -329,49 +367,71 @@ cells.extend(
                     optimizer, gamma=0.99948708
                 )
                 loader = make_train_loader()
-                iterator = iter(loader)
                 history = {
-                    "data": [],
-                    "pde_uniform": [],
-                    "pde_objective": [],
-                    "physics_contribution": [],
-                    "total": [],
+                    "epoch": [],
+                    "train_data": [],
+                    "train_pde_uniform": [],
+                    "train_pde_objective": [],
+                    "train_physics_contribution": [],
+                    "train_total": [],
+                    "valid_data": [],
+                    "valid_pde_uniform": [],
+                    "valid_pde_objective": [],
+                    "valid_physics_contribution": [],
+                    "valid_total": [],
                     "lr": [],
                 }
                 started = time.perf_counter()
 
-                model.train()
-                for step in range(1, STEPS_PER_VARIANT + 1):
-                    try:
-                        invar, outvar, _, _ = next(iterator)
-                    except StopIteration:
-                        iterator = iter(loader)
-                        invar, outvar, _, _ = next(iterator)
+                train_keys = [
+                    "data",
+                    "pde_uniform",
+                    "pde_objective",
+                    "physics_contribution",
+                    "total",
+                ]
+                for epoch in range(1, COMPARISON_EPOCHS + 1):
+                    model.train()
+                    sums = {key: 0.0 for key in train_keys}
 
-                    optimizer.zero_grad(set_to_none=True)
-                    losses = comparison_losses(model, invar, outvar, mode)
-                    losses["total"].backward()
-                    optimizer.step()
-                    scheduler.step()
+                    for invar, outvar, _, _ in loader:
+                        optimizer.zero_grad(set_to_none=True)
+                        losses = comparison_losses(model, invar, outvar, mode)
+                        losses["total"].backward()
+                        optimizer.step()
+                        scheduler.step()
 
-                    for key in [
-                        "data",
-                        "pde_uniform",
-                        "pde_objective",
-                        "physics_contribution",
-                        "total",
-                    ]:
-                        history[key].append(float(losses[key].detach()))
+                        for key in train_keys:
+                            sums[key] += float(losses[key].detach())
+
+                    validation = validation_epoch_means(model, mode)
+                    history["epoch"].append(epoch)
+                    for key in train_keys:
+                        history[f"train_{key}"].append(sums[key] / len(loader))
+                        history[f"valid_{key}"].append(validation[key])
                     history["lr"].append(optimizer.param_groups[0]["lr"])
-                    if step == 1 or step % max(1, STEPS_PER_VARIANT // 4) == 0:
+
+                    if (
+                        epoch == 1
+                        or epoch == COMPARISON_EPOCHS
+                        or epoch % max(1, COMPARISON_EPOCHS // 10) == 0
+                    ):
                         print(
-                            f"{mode:8s} {step:4d}/{STEPS_PER_VARIANT} | "
-                            f"data={history['data'][-1]:.4e} | "
-                            f"uniform PDE={history['pde_uniform'][-1]:.4e} | "
-                            f"PDE objective={history['pde_objective'][-1]:.4e}"
+                            f"{mode:8s} epoch {epoch:02d}/{COMPARISON_EPOCHS} | "
+                            f"train data={history['train_data'][-1]:.4e} | "
+                            f"valid data={history['valid_data'][-1]:.4e} | "
+                            f"valid uniform PDE={history['valid_pde_uniform'][-1]:.4e}"
                         )
 
-                print(mode, "elapsed:", f"{time.perf_counter() - started:.1f}s")
+                expected_updates = len(loader) * COMPARISON_EPOCHS
+                assert len(history["epoch"]) == COMPARISON_EPOCHS
+                assert TRAIN_BATCH_SIZE == 1
+                print(
+                    mode,
+                    "updates / elapsed:",
+                    expected_updates,
+                    f"{time.perf_counter() - started:.1f}s",
+                )
                 return model, history
 
 
@@ -385,8 +445,7 @@ cells.extend(
 
             여기서 **Existing PINO**는 이 저장소의 기존
             [`darcy_pino_physicsnemo_colab.ipynb`](darcy_pino_physicsnemo_colab.ipynb)에 있는
-            loss를 그대로 사용해 같은 초기값으로 다시 학습한 `fixed` run입니다.
-            별도의 50-epoch checkpoint를 불러온 비교는 아닙니다.
+            loss와 50-epoch 학습 조건을 그대로 사용한 `fixed` run입니다.
 
             | 표시 이름 | 수식 | 의미 |
             |---|---|---|
@@ -397,61 +456,68 @@ cells.extend(
             | Physics contribution | $\frac{0.1}{240}L_{PDE}^{objective}$ | total loss에 실제 더해지는 PDE 항 |
             | Total objective | $L_{data}+\frac{0.1}{240}L_{PDE}^{objective}$ | optimizer가 최소화하는 최종 loss |
 
-            따라서 **Uniform PDE L1 그래프가 사과 대 사과 비교**이고,
-            PDE objective/physics contribution 그래프는 각 모델이 실제로 무엇을 최적화했는지 보여줍니다.
-            아래 곡선은 epoch 평균이 아니라 batch size 1의 optimizer-step 값이라 출렁이는 것이 정상입니다.
+            모든 train 곡선은 epoch당 102 batch의 평균이고, validation 곡선은 동일한 전체 validation split의 평균입니다.
+            특히 **validation Uniform PDE L1**이 두 모델의 물리 오차를 같은 정의로 비교하는 핵심 그래프입니다.
             """
         ),
         code(
             r"""
-            # 5-2. loss 항별 fixed-vs-adaptive 비교 — 모든 축과 범례를 명시
+            # 5-2. 50-epoch loss 비교 — x축은 기존 PINO와 같은 epoch
             comparison_labels = {
                 "fixed": "Existing PINO — uniform PDE loss",
                 "adaptive": "Adaptive PINO — spatially weighted PDE loss",
             }
-            fixed_steps = np.arange(1, len(fixed_history["total"]) + 1)
-            adaptive_steps = np.arange(1, len(adaptive_history["total"]) + 1)
 
-            fig, axes = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
+            fig, axes = plt.subplots(2, 3, figsize=(17, 9), constrained_layout=True)
             plot_specs = [
                 (
-                    "data",
-                    "A. Pressure data mismatch",
-                    "Data MSE: mean((predicted u - target u)^2)",
+                    "train_data",
+                    "A. Train pressure mismatch (epoch mean)",
+                    "Train data MSE",
                 ),
                 (
-                    "pde_uniform",
-                    "B. Common physics metric (apples-to-apples)",
-                    "Uniform Darcy PDE L1: mean(|residual|)",
+                    "train_pde_uniform",
+                    "B. Train common physics metric (epoch mean)",
+                    "Train uniform Darcy PDE L1",
                 ),
                 (
-                    "physics_contribution",
-                    "C. Physics term actually added to total loss",
-                    "Physics contribution: (0.1 / 240) × PDE objective",
+                    "train_physics_contribution",
+                    "C. Physics term added to train total",
+                    "Train (0.1 / 240) × PDE objective",
                 ),
                 (
-                    "total",
-                    "D. Objective minimized by Adam",
-                    "Total training objective",
+                    "train_total",
+                    "D. Adam objective (epoch mean)",
+                    "Train total objective",
+                ),
+                (
+                    "valid_data",
+                    "E. Same full validation split",
+                    "Validation data MSE",
+                ),
+                (
+                    "valid_pde_uniform",
+                    "F. Apples-to-apples physics validation",
+                    "Validation uniform Darcy PDE L1",
                 ),
             ]
             for axis, (key, title, ylabel) in zip(axes.flat, plot_specs):
                 axis.semilogy(
-                    fixed_steps,
+                    fixed_history["epoch"],
                     fixed_history[key],
                     marker="o",
                     markersize=3,
                     label=comparison_labels["fixed"],
                 )
                 axis.semilogy(
-                    adaptive_steps,
+                    adaptive_history["epoch"],
                     adaptive_history[key],
                     marker="s",
                     markersize=3,
                     label=comparison_labels["adaptive"],
                 )
                 axis.set_title(title)
-                axis.set_xlabel("Optimizer step")
+                axis.set_xlabel("Epoch (102 optimizer updates per epoch)")
                 axis.set_ylabel(ylabel)
                 axis.grid(alpha=0.25, which="both")
                 axis.legend(title="Model / training loss", fontsize=8)
@@ -560,7 +626,7 @@ cells.extend(
             r"""
             ## 해석 기준과 다음 ablation
 
-            QUICK mode가 통과해도 adaptive 방법이 더 좋다고 결론 내리면 안 됩니다. 다음 순서로 실험을 늘립니다.
+            한 번의 50-epoch 비교만으로 adaptive 방법이 더 좋다고 결론 내리면 안 됩니다. 다음 순서로 실험을 늘립니다.
 
             1. 3개 이상 seed에서 fixed/adaptive 반복
             2. validation relative L2, 전체 PDE L1, interface PDE L1의 평균·표준편차 보고
@@ -578,8 +644,9 @@ cells.extend(
             torch.save({
                 "physicsnemo_version": physicsnemo.__version__,
                 "source": "NVIDIA Darcy 240x240 + residual-driven spatial weighting",
-                "quick_mode": QUICK_MODE,
-                "steps_per_variant": STEPS_PER_VARIANT,
+                "full_baseline_comparison": FULL_BASELINE_COMPARISON,
+                "comparison_epochs": COMPARISON_EPOCHS,
+                "train_batch_size": TRAIN_BATCH_SIZE,
                 "adaptive_alpha": ADAPTIVE_ALPHA,
                 "adaptive_temperature": ADAPTIVE_TEMPERATURE,
                 "material_prior_weight": MATERIAL_PRIOR_WEIGHT,

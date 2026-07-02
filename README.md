@@ -8,12 +8,18 @@ Adaptive fixed-vs-spatial-weighted experiment:
 
 [![Open Adaptive PINO In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/darcy_adaptive_pino_physicsnemo_colab.ipynb)
 
+Solid mechanics MeshGraphNet-style adaptive residual experiment:
+
+[![Open Solid Adaptive MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_adaptive_mgn_colab.ipynb)
+
 ## Main files
 
 - `notebooks/darcy_pino_physicsnemo_colab.ipynb` — the recommended Colab/Jupyter notebook.
 - `scripts/darcy_pino_physicsnemo.py` — the same 26 cells in `# %%` percent format for VS Code, Jupyter-aware editors, or sequential Python execution.
 - `notebooks/darcy_adaptive_pino_physicsnemo_colab.ipynb` — a controlled comparison between uniform and residual-driven spatial physics weighting.
 - `scripts/darcy_adaptive_pino_physicsnemo.py` — the adaptive notebook in `# %%` percent format.
+- `notebooks/solid_adaptive_mgn_colab.ipynb` — a lightweight solid mechanics MeshGraphNet-style Colab inspired by PhysicsNeMo's `deforming_plate` example, comparing fixed and adaptive graph residual losses.
+- `scripts/solid_adaptive_mgn.py` — the solid adaptive MeshGraphNet notebook in `# %%` percent format.
 
 Both versions contain the same:
 
@@ -37,3 +43,9 @@ The adaptive notebook reuses the official 240 x 240 data, FNO, PhysicsInformer, 
 Its comparison cell separates the common unweighted Darcy residual metric from each model's actual training objective: the existing PINO uses `mean(abs(residual))`, while adaptive PINO uses `mean(weight * abs(residual))`. Every loss plot uses the same 50-epoch x-axis as the baseline, labels the precise loss quantity on the y-axis, and shows both model variants in the legend.
 
 `FULL_BASELINE_COMPARISON=True` matches the existing GitHub PINO training schedule: batch size 1, all 102 training samples per epoch, 50 epochs, and full validation after every epoch. Fixed and adaptive curves are epoch averages, not unrelated single-batch values. Use multiple random seeds before drawing performance conclusions. The permeability-gradient prior is disabled by default because strong-form residuals around discontinuous coefficients need separate numerical validation.
+
+## Solid adaptive MeshGraphNet-style experiment
+
+The solid notebook follows the idea notes around PhysicsNeMo's structural mechanics `deforming_plate` MeshGraphNet example. It does not attempt to reproduce the full DeepMind deforming-plate dataset run in Colab. Instead, it builds a small synthetic plate graph, a MeshGraphNet-style encoder/processor/decoder, and a graph solid-residual proxy so the fixed-vs-adaptive loss idea can compile and run quickly on a Colab GPU.
+
+This is not a conflict with MeshGraphNet: MGN is the mesh message-passing backbone, while the adaptive method changes how the residual loss is spatially weighted. The right interpretation is that adaptive weighting redistributes training pressure toward high-residual/interface nodes; it is not a blanket guarantee that every global residual metric improves.

@@ -1239,6 +1239,25 @@ plt.show()
 # %% [markdown]
 # ## 해석 기준과 다음 ablation
 #
+# ### 이번 50-epoch 확인 run을 어떻게 읽을까
+#
+# 이 결과는 **Adaptive PINO가 전체 물리 residual을 무조건 낮춘다**는 의미가 아닙니다. 현재 설정의 adaptive loss는 전체 physics-loss 양을 키우는 대신, residual이 큰 위치에 가중치를 더 주어 **어려운 공간 영역, 특히 permeability가 급변하는 interface 주변을 더 강하게 학습**시키는 방식입니다.
+#
+# Colab T4에서 `SEED=42`, batch size 1, 50 epochs로 확인한 run에서는 다음 경향이 보였습니다.
+#
+# | 지표 | Existing PINO | Adaptive PINO | 읽는 법 |
+# |---|---:|---:|---|
+# | validation data MSE | `8.2611e-03` | `7.5471e-03` | pressure 예측 오차는 adaptive가 더 낮음 |
+# | validation relative L2 | `4.4933e-02` | `4.2603e-02` | 전체 solution field 오차도 adaptive가 더 낮음 |
+# | validation uniform PDE L1 | `4.1663e+01` | `4.2561e+01` | 전체 영역 평균 PDE residual은 fixed가 약간 낮음 |
+# | interface PDE L1 | `6.6526e+01` | `5.6489e+01` | permeability 급변/interface 영역 residual은 adaptive가 더 낮음 |
+#
+# 따라서 이 노트북의 1차 결론은 "adaptive가 기존 PINO보다 항상 우월하다"가 아니라,
+#
+# > spatially adaptive physics weighting은 전체 PDE residual 평균을 무조건 줄이는 장치라기보다, 어려운 위치로 physics loss를 재배치해서 interface 쪽 residual과 solution error를 개선할 수 있는 예시입니다.
+#
+# 입니다. 더 강한 결론을 내려면 아래 ablation을 먼저 해야 합니다.
+#
 # 한 번의 50-epoch 비교만으로 adaptive 방법이 더 좋다고 결론 내리면 안 됩니다. 다음 순서로 실험을 늘립니다.
 #
 # 1. 3개 이상 seed에서 fixed/adaptive 반복

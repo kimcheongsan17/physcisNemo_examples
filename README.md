@@ -12,6 +12,10 @@ Solid mechanics basic MeshGraphNet-style smoke example:
 
 [![Open Solid Basic MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_basic_mgn_colab.ipynb)
 
+Solid collision/contact MeshGraphNet-style smoke example:
+
+[![Open Solid Collision MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_collision_mgn_colab.ipynb)
+
 Solid mechanics MeshGraphNet-style adaptive residual follow-up experiment:
 
 [![Open Solid Adaptive MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_adaptive_mgn_colab.ipynb)
@@ -24,6 +28,8 @@ Solid mechanics MeshGraphNet-style adaptive residual follow-up experiment:
 - `scripts/darcy_adaptive_pino_physicsnemo.py` — the adaptive notebook in `# %%` percent format.
 - `notebooks/solid_basic_mgn_colab.ipynb` — the baseline solid mechanics MeshGraphNet-style Colab inspired by PhysicsNeMo's `deforming_plate` example, using supervised displacement loss plus a uniform graph residual loss.
 - `scripts/solid_basic_mgn.py` — the solid basic MeshGraphNet notebook in `# %%` percent format.
+- `notebooks/solid_collision_mgn_colab.ipynb` — a separate solid collision/contact Colab where two elastic bodies collide, using internal spring edges plus dynamic contact edges.
+- `scripts/solid_collision_mgn.py` — the solid collision MeshGraphNet notebook in `# %%` percent format.
 - `notebooks/solid_adaptive_mgn_colab.ipynb` — a follow-up solid mechanics MeshGraphNet-style experiment comparing fixed and adaptive graph residual losses.
 - `scripts/solid_adaptive_mgn.py` — the solid adaptive follow-up notebook in `# %%` percent format.
 
@@ -55,6 +61,12 @@ Its comparison cell separates the common unweighted Darcy residual metric from e
 The basic solid notebook is the first step for the structural mechanics side. It builds a small synthetic plate graph, a MeshGraphNet-style encoder/processor/decoder, and a uniform graph solid-residual proxy. The point is to check that the solid MGN baseline compiles and actually trains in Colab before adding adaptive weighting.
 
 The notebook keeps checkpoint writing disabled by default (`SAVE_CHECKPOINT=False`), so running it in Colab does not save a model unless you explicitly opt in.
+
+## Solid collision/contact MeshGraphNet-style example
+
+The collision notebook is separate from the deforming-plate-style baseline. It represents two 2D elastic solid bodies as node clouds, builds internal spring edges inside each solid, adds dynamic contact edges between close nodes from different bodies, and trains a small MeshGraphNet-style model to predict post-impact node velocity.
+
+This notebook is intended as the baseline for future contact-aware adaptive weighting. It reports velocity MSE, contact-node MSE, momentum error, and separation velocity so later experiments can decide whether to reweight contact nodes, high-error contact edges, or penetration-like metrics.
 
 ## Solid adaptive MeshGraphNet-style follow-up experiment
 

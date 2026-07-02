@@ -34,4 +34,6 @@ Generated datasets and the approximately 27 MB model checkpoint are intentionall
 
 The adaptive notebook reuses the official 240 x 240 data, FNO, PhysicsInformer, scaling, boundary crop, optimizer, and global physics coefficient from the baseline. Only the spatial distribution of the PDE loss changes. Weights are detached from autograd and normalized to mean one over the interior, so the comparison does not silently increase the total physics-loss scale.
 
+Its comparison cell separates the common unweighted Darcy residual metric from each model's actual training objective: the existing PINO uses `mean(abs(residual))`, while adaptive PINO uses `mean(weight * abs(residual))`. Every loss plot labels the optimizer-step x-axis, the precise loss quantity on the y-axis, and both model variants in the legend.
+
 `QUICK_MODE=True` runs a short fixed/adaptive smoke test intended to verify a fresh Colab runtime. Use the longer mode and multiple random seeds before drawing performance conclusions. The permeability-gradient prior is disabled by default because strong-form residuals around discontinuous coefficients need separate numerical validation.

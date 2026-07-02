@@ -817,15 +817,24 @@ def comparison_losses(model, invar, outvar, mode):
         raise ValueError(f"unknown mode: {mode}")
 
     data_loss = F.mse_loss(outvar, prediction)
-    # 전체 240x240 element 수로 나누므로 fixed mode는 원본 F.l1_loss와 같습니다.
-    pde_loss = (weights * residual_padded.abs()).sum() / residual_padded.numel()
-    total_loss = data_loss + OFFICIAL_DX * OFFICIAL_PHYSICS_WEIGHT * pde_loss
+    # 두 모델에 공통인 평가량: 공간 weight를 적용하지 않은 원본 PDE L1.
+    pde_uniform = residual_padded.abs().mean()
+    # 학습에 실제 사용되는 PDE objective. fixed에서는 pde_uniform과 정확히 같습니다.
+    pde_objective = (
+        weights * residual_padded.abs()
+    ).sum() / residual_padded.numel()
+    physics_contribution = (
+        OFFICIAL_DX * OFFICIAL_PHYSICS_WEIGHT * pde_objective
+    )
+    total_loss = data_loss + physics_contribution
     return {
         "prediction": prediction,
         "residual": residual_padded,
         "weights": weights,
         "data": data_loss,
-        "pde": pde_loss,
+        "pde_uniform": pde_uniform,
+        "pde_objective": pde_objective,
+        "physics_contribution": physics_contribution,
         "total": total_loss,
     }
 
@@ -860,13 +869,19 @@ interior_weight_mean = (
     adaptive_check["weights"].sum()
     / (official_invar.shape[0] * PDE_INTERIOR_MASK.sum())
 )
-print("original/fixed PDE:", float(original_check["pde"]), float(fixed_check["pde"]))
+print(
+    "original/fixed uniform PDE L1:",
+    float(original_check["pde"]),
+    float(fixed_check["pde_uniform"]),
+)
 print("adaptive weight mean:", float(interior_weight_mean))
 print("adaptive weight min/max:",
       float(adaptive_check["weights"][adaptive_check["weights"] > 0].min()),
       float(adaptive_check["weights"].max()))
 
-assert torch.allclose(original_check["pde"], fixed_check["pde"], atol=1e-6)
+assert torch.allclose(
+    original_check["pde"], fixed_check["pde_objective"], atol=1e-6
+)
 assert adaptive_check["weights"].shape == official_outvar.shape
 assert not adaptive_check["weights"].requires_grad
 assert torch.allclose(
@@ -938,7 +953,14 @@ def train_variant(mode):
     )
     loader = make_train_loader()
     iterator = iter(loader)
-    history = {"data": [], "pde": [], "total": [], "lr": []}
+    history = {
+        "data": [],
+        "pde_uniform": [],
+        "pde_objective": [],
+        "physics_contribution": [],
+        "total": [],
+        "lr": [],
+    }
     started = time.perf_counter()
 
     model.train()
@@ -955,14 +977,21 @@ def train_variant(mode):
         optimizer.step()
         scheduler.step()
 
-        for key in ["data", "pde", "total"]:
+        for key in [
+            "data",
+            "pde_uniform",
+            "pde_objective",
+            "physics_contribution",
+            "total",
+        ]:
             history[key].append(float(losses[key].detach()))
         history["lr"].append(optimizer.param_groups[0]["lr"])
         if step == 1 or step % max(1, STEPS_PER_VARIANT // 4) == 0:
             print(
                 f"{mode:8s} {step:4d}/{STEPS_PER_VARIANT} | "
                 f"data={history['data'][-1]:.4e} | "
-                f"pde={history['pde'][-1]:.4e}"
+                f"uniform PDE={history['pde_uniform'][-1]:.4e} | "
+                f"PDE objective={history['pde_objective'][-1]:.4e}"
             )
 
     print(mode, "elapsed:", f"{time.perf_counter() - started:.1f}s")
@@ -971,6 +1000,82 @@ def train_variant(mode):
 
 fixed_model, fixed_history = train_variant("fixed")
 adaptive_model, adaptive_history = train_variant("adaptive")
+
+# %% [markdown]
+# ### 5-2. 기존 GitHub PINO loss와 adaptive loss를 같은 축에서 비교
+#
+# 여기서 **Existing PINO**는 이 저장소의 기존
+# [`darcy_pino_physicsnemo_colab.ipynb`](darcy_pino_physicsnemo_colab.ipynb)에 있는
+# loss를 그대로 사용해 같은 초기값으로 다시 학습한 `fixed` run입니다.
+# 별도의 50-epoch checkpoint를 불러온 비교는 아닙니다.
+#
+# | 표시 이름 | 수식 | 의미 |
+# |---|---|---|
+# | Data MSE | $L_{data}=\operatorname{mean}((\hat u-u)^2)$ | 정답 pressure와 예측 pressure의 오차 |
+# | Uniform PDE L1 | $L_{PDE}^{uniform}=\operatorname{mean}(|r|)$ | **두 모델에 공통으로 적용하는** raw Darcy residual 평가량 |
+# | Existing PINO PDE objective | $L_{PDE}^{fixed}=L_{PDE}^{uniform}$ | 기존 GitHub PINO가 학습에 쓰는 PDE loss |
+# | Adaptive PINO PDE objective | $L_{PDE}^{adaptive}=\operatorname{mean}(w(x)|r(x)|)$ | 어려운 위치를 강조한 PDE loss, 내부 $\operatorname{mean}(w)=1$ |
+# | Physics contribution | $\frac{0.1}{240}L_{PDE}^{objective}$ | total loss에 실제 더해지는 PDE 항 |
+# | Total objective | $L_{data}+\frac{0.1}{240}L_{PDE}^{objective}$ | optimizer가 최소화하는 최종 loss |
+#
+# 따라서 **Uniform PDE L1 그래프가 사과 대 사과 비교**이고,
+# PDE objective/physics contribution 그래프는 각 모델이 실제로 무엇을 최적화했는지 보여줍니다.
+# 아래 곡선은 epoch 평균이 아니라 batch size 1의 optimizer-step 값이라 출렁이는 것이 정상입니다.
+
+# %%
+# 5-2. loss 항별 fixed-vs-adaptive 비교 — 모든 축과 범례를 명시
+comparison_labels = {
+    "fixed": "Existing PINO — uniform PDE loss",
+    "adaptive": "Adaptive PINO — spatially weighted PDE loss",
+}
+fixed_steps = np.arange(1, len(fixed_history["total"]) + 1)
+adaptive_steps = np.arange(1, len(adaptive_history["total"]) + 1)
+
+fig, axes = plt.subplots(2, 2, figsize=(13, 8), constrained_layout=True)
+plot_specs = [
+    (
+        "data",
+        "A. Pressure data mismatch",
+        "Data MSE: mean((predicted u - target u)^2)",
+    ),
+    (
+        "pde_uniform",
+        "B. Common physics metric (apples-to-apples)",
+        "Uniform Darcy PDE L1: mean(|residual|)",
+    ),
+    (
+        "physics_contribution",
+        "C. Physics term actually added to total loss",
+        "Physics contribution: (0.1 / 240) × PDE objective",
+    ),
+    (
+        "total",
+        "D. Objective minimized by Adam",
+        "Total training objective",
+    ),
+]
+for axis, (key, title, ylabel) in zip(axes.flat, plot_specs):
+    axis.semilogy(
+        fixed_steps,
+        fixed_history[key],
+        marker="o",
+        markersize=3,
+        label=comparison_labels["fixed"],
+    )
+    axis.semilogy(
+        adaptive_steps,
+        adaptive_history[key],
+        marker="s",
+        markersize=3,
+        label=comparison_labels["adaptive"],
+    )
+    axis.set_title(title)
+    axis.set_xlabel("Optimizer step")
+    axis.set_ylabel(ylabel)
+    axis.grid(alpha=0.25, which="both")
+    axis.legend(title="Model / training loss", fontsize=8)
+
+plt.show()
 
 # %% [markdown]
 # ## 6. Validation: 전체 오차와 permeability 급변 영역을 분리
@@ -983,7 +1088,12 @@ adaptive_model, adaptive_history = train_variant("adaptive")
 @torch.no_grad()
 def evaluate_variant(model, mode):
     model.eval()
-    metrics = {"mse": [], "relative_l2": [], "pde_l1": [], "interface_pde_l1": []}
+    metrics = {
+        "data_mse": [],
+        "relative_l2": [],
+        "uniform_pde_l1": [],
+        "interface_uniform_pde_l1": [],
+    }
     shown = None
     for index, (invar, outvar, _, _) in enumerate(official_valid_loader):
         if index >= VALIDATION_LIMIT:
@@ -998,13 +1108,13 @@ def evaluate_variant(model, mode):
             gradient >= threshold[:, :, None, None]
         ).to(residual_abs.dtype) * PDE_INTERIOR_MASK
 
-        metrics["mse"].append(float(F.mse_loss(prediction, outvar)))
+        metrics["data_mse"].append(float(F.mse_loss(prediction, outvar)))
         metrics["relative_l2"].append(float(
             torch.linalg.vector_norm(prediction - outvar)
             / torch.linalg.vector_norm(outvar).clamp_min(1e-12)
         ))
-        metrics["pde_l1"].append(float(residual_abs.mean()))
-        metrics["interface_pde_l1"].append(float(
+        metrics["uniform_pde_l1"].append(float(residual_abs.mean()))
+        metrics["interface_uniform_pde_l1"].append(float(
             (residual_abs * interface_mask).sum()
             / interface_mask.sum().clamp_min(1.0)
         ))
@@ -1022,34 +1132,42 @@ def evaluate_variant(model, mode):
 
 fixed_metrics, fixed_shown = evaluate_variant(fixed_model, "fixed")
 adaptive_metrics, adaptive_shown = evaluate_variant(adaptive_model, "adaptive")
-print("fixed   :", fixed_metrics)
-print("adaptive:", adaptive_metrics)
+metric_header = (
+    f"{'model':<18} {'data MSE':>12} {'relative L2':>12} "
+    f"{'uniform PDE L1':>16} {'interface PDE L1':>18}"
+)
+print(metric_header)
+print("-" * len(metric_header))
+for model_name, metrics in [
+    ("Existing PINO", fixed_metrics),
+    ("Adaptive PINO", adaptive_metrics),
+]:
+    print(
+        f"{model_name:<18} {metrics['data_mse']:>12.4e} "
+        f"{metrics['relative_l2']:>12.4e} "
+        f"{metrics['uniform_pde_l1']:>16.4e} "
+        f"{metrics['interface_uniform_pde_l1']:>18.4e}"
+    )
 
 fig, axes = plt.subplots(2, 5, figsize=(18, 7), constrained_layout=True)
 for row, (name, shown) in enumerate([
     ("fixed", fixed_shown), ("adaptive", adaptive_shown)
 ]):
+    display_name = "Existing PINO" if name == "fixed" else "Adaptive PINO"
     panels = [
-        (shown["k"][0, 0], "k", "viridis"),
-        (shown["target"][0, 0], "target u", "magma"),
-        (shown["prediction"][0, 0], f"{name} u", "magma"),
-        (shown["residual"][0, 0], f"{name} |residual|", "inferno"),
-        (shown["weights"][0, 0], f"{name} weight", "plasma"),
+        (shown["k"][0, 0], "Permeability k", "viridis", "k [physical scale]"),
+        (shown["target"][0, 0], "Target pressure u", "magma", "u [physical scale]"),
+        (shown["prediction"][0, 0], f"{display_name} prediction", "magma", "u [physical scale]"),
+        (shown["residual"][0, 0], f"{display_name} |Darcy residual|", "inferno", "|residual| [scaled PDE units]"),
+        (shown["weights"][0, 0], f"{display_name} spatial weight", "plasma", "w(x), interior mean = 1"),
     ]
-    for axis, (image, title, cmap) in zip(axes[row], panels):
+    for axis, (image, title, cmap, colorbar_label) in zip(axes[row], panels):
         rendered = axis.imshow(image.numpy(), origin="lower", cmap=cmap)
         axis.set_title(title)
-        axis.set_xticks([]); axis.set_yticks([])
-        plt.colorbar(rendered, ax=axis, fraction=0.046)
-plt.show()
-
-fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), constrained_layout=True)
-axes[0].semilogy(fixed_history["total"], label="fixed")
-axes[0].semilogy(adaptive_history["total"], label="adaptive")
-axes[0].set_title("total loss"); axes[0].legend(); axes[0].grid(alpha=0.25)
-axes[1].semilogy(fixed_history["pde"], label="fixed")
-axes[1].semilogy(adaptive_history["pde"], label="adaptive")
-axes[1].set_title("weighted PDE L1"); axes[1].legend(); axes[1].grid(alpha=0.25)
+        axis.set_xlabel("x grid index")
+        axis.set_ylabel("y grid index")
+        colorbar = plt.colorbar(rendered, ax=axis, fraction=0.046)
+        colorbar.set_label(colorbar_label)
 plt.show()
 
 # %% [markdown]

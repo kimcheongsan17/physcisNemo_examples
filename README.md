@@ -12,6 +12,10 @@ Solid mechanics basic MeshGraphNet-style smoke example:
 
 [![Open Solid Basic MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_basic_mgn_colab.ipynb)
 
+Official-style PhysicsNeMo deforming plate MeshGraphNet smoke example:
+
+[![Open Official-Style Deforming Plate MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_deforming_plate_mgn_physicsnemo_colab.ipynb)
+
 Solid mechanics MeshGraphNet-style adaptive residual follow-up experiment:
 
 [![Open Solid Adaptive MGN In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimcheongsan17/physcisNemo_examples/blob/main/notebooks/solid_adaptive_mgn_colab.ipynb)
@@ -24,6 +28,8 @@ Solid mechanics MeshGraphNet-style adaptive residual follow-up experiment:
 - `scripts/darcy_adaptive_pino_physicsnemo.py` — the adaptive notebook in `# %%` percent format.
 - `notebooks/solid_basic_mgn_colab.ipynb` — the baseline solid mechanics MeshGraphNet-style Colab inspired by PhysicsNeMo's `deforming_plate` example, using supervised displacement loss plus a uniform graph residual loss.
 - `scripts/solid_basic_mgn.py` — the solid basic MeshGraphNet notebook in `# %%` percent format.
+- `notebooks/solid_deforming_plate_mgn_physicsnemo_colab.ipynb` — an official-style Colab based on NVIDIA PhysicsNeMo's `examples/structural_mechanics/deforming_plate`, matching the official node/edge/output tensor contract in a lightweight smoke run.
+- `scripts/solid_deforming_plate_mgn_physicsnemo.py` — the official-style deforming plate notebook in `# %%` percent format.
 - `notebooks/solid_adaptive_mgn_colab.ipynb` — a follow-up solid mechanics MeshGraphNet-style experiment comparing fixed and adaptive graph residual losses.
 - `scripts/solid_adaptive_mgn.py` — the solid adaptive follow-up notebook in `# %%` percent format.
 
@@ -55,6 +61,12 @@ Its comparison cell separates the common unweighted Darcy residual metric from e
 The basic solid notebook is the first step for the structural mechanics side. It builds a small synthetic plate graph, a MeshGraphNet-style encoder/processor/decoder, and a uniform graph solid-residual proxy. The point is to check that the solid MGN baseline compiles and actually trains in Colab before adding adaptive weighting.
 
 The notebook keeps checkpoint writing disabled by default (`SAVE_CHECKPOINT=False`), so running it in Colab does not save a model unless you explicitly opt in.
+
+## Official-style PhysicsNeMo deforming plate MeshGraphNet example
+
+The official-style deforming plate notebook is based on NVIDIA PhysicsNeMo's `examples/structural_mechanics/deforming_plate` recipe. The full official example uses the DeepMind deforming-plate dataset, tetrahedral meshes, autoregressive rollout, `HybridMeshGraphNet`, and the official tensor contract: node input dimension 3, edge feature dimension 8, and output dimension 4 for velocity xyz plus stress.
+
+The Colab notebook keeps that tensor contract but replaces the large TFRecord dataset and full trainer with a small synthetic 3D plate graph so it can compile and train quickly on a T4 runtime. It also documents the full official pipeline commands for later reproduction outside the smoke run.
 
 ## Solid adaptive MeshGraphNet-style follow-up experiment
 
